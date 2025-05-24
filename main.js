@@ -72,30 +72,20 @@ class Player {
         this.image = loadedImages.Player;
     }
     rotate(keys) {
-        // WASD rotation logic
-        let dir = this.dir;
-        if (keys['KeyS']) {
-            dir = 0;
-            if (keys['KeyA']) dir += 45;
-            if (keys['KeyD']) dir -= 45;
-        }
-        if (keys['KeyW']) {
-            dir = 180;
-            if (keys['KeyA']) dir -= 45;
-            if (keys['KeyD']) dir += 45;
-        }
-        if (keys['KeyD']) {
-            dir = 90;
-            if (keys['KeyW']) dir += 45;
-            if (keys['KeyS']) dir -= 45;
-        }
-        if (keys['KeyA']) {
-            dir = 270;
-            if (keys['KeyW']) dir -= 45;
-            if (keys['KeyS']) dir += 45;
-        }
-        this.dir = dir;
-        globalDir = dir;
+        // 8-directional facing: right=0, down=90, left=180, up=270, diagonals at 45°
+        const up = keys['KeyW'];
+        const down = keys['KeyS'];
+        const left = keys['KeyA'];
+        const right = keys['KeyD'];
+        if (up && left) this.dir = 315;
+        else if (up && right) this.dir = 45;
+        else if (down && left) this.dir = 225;
+        else if (down && right) this.dir = 135;
+        else if (right) this.dir = 0;
+        else if (down) this.dir = 90;
+        else if (left) this.dir = 180;
+        else if (up) this.dir = 270;
+        globalDir = this.dir;
     }
     update(keys) {
         this.rotate(keys);
@@ -109,7 +99,7 @@ class Player {
     draw(ctx) {
         ctx.save();
         ctx.translate(this.x, this.y);
-        ctx.rotate((this.dir - 180) * Math.PI / 180);
+        ctx.rotate(this.dir * Math.PI / 180);
         ctx.drawImage(this.image, -this.image.width/2, -this.image.height/2);
         ctx.restore();
         // Draw health bar
@@ -296,9 +286,17 @@ function drawMap() {
 function scroll(keys) {
     lastOffsetX = offsetX;
     lastOffsetY = offsetY;
-    if (keys['KeyS'] || keys['KeyW'] || keys['KeyD'] || keys['KeyA']) {
-        offsetX += Math.sin(globalDir / 57.2957795131) * speed / fps * 60;
-        offsetY += Math.cos(globalDir / 57.2957795131) * speed / fps * 60;
+    // Axis-aligned movement: WASD
+    let dx = 0, dy = 0;
+    if (keys['KeyA']) dx -= 1;
+    if (keys['KeyD']) dx += 1;
+    if (keys['KeyW']) dy -= 1;
+    if (keys['KeyS']) dy += 1;
+    if (dx !== 0 || dy !== 0) {
+        let len = Math.sqrt(dx*dx + dy*dy);
+        if (len > 0) { dx /= len; dy /= len; }
+        offsetX += dx * speed / fps * 60;
+        offsetY += dy * speed / fps * 60;
     }
 }
 
@@ -505,7 +503,8 @@ function drawTitleScreen() {
     ctx.font = '32px sans-serif';
     ctx.fillStyle = COLORS.WHITE;
     ctx.textAlign = 'left';
-    ctx.fillText('UnstableAI 0.1.2 Beta', 10, 700);
+    ctx.fillText('Copyright Aatu Nurmi', 10, 660);
+    ctx.fillText('Javascript edition', 10, 700);
     // Credit button
     let creditRect = { x: 1010, y: 670, w: 260, h: 36 };
     let creditHover = pointInRect(mouse.x, mouse.y, creditRect);
@@ -529,13 +528,49 @@ canvas.addEventListener('mousedown', e => {
         // Play
         if (pointInRect(mouse.x, mouse.y, playRect)) {
             titleActive = false;
-            loadGame(); // Only start game after Play is clicked
+            loadGame();
         }
-        // Map Editor (not implemented)
+        // Map Editor
         if (pointInRect(mouse.x, mouse.y, mapEditorRect)) {
-            alert('Map editor not implemented in web version.');
+            // Debug: log to console when button is clicked
+            console.log('Map Editor button clicked');
+            if (window.showMapEditor) {
+                try {
+                    window.showMapEditor();
+                    console.log('Called window.showMapEditor()');
+                } catch (err) {
+                    console.error('Error calling showMapEditor:', err);
+                    alert('Error opening map editor: ' + err);
+                }
+            } else {
+                // Otherwise, load the script and call after load
+                console.log('Loading mapeditor.js...');
+                const script = document.createElement('script');
+                script.src = 'mapeditor.js';
+                script.onload = () => {
+                    setTimeout(() => {
+                        if (window.showMapEditor) {
+                            try {
+                                window.showMapEditor();
+                                console.log('Loaded and called window.showMapEditor()');
+                            } catch (err) {
+                                console.error('Error after loading mapeditor.js:', err);
+                                alert('Error after loading mapeditor.js: ' + err);
+                            }
+                        } else {
+                            console.error('mapeditor.js loaded but window.showMapEditor is not defined');
+                            alert('Map editor failed to load. (window.showMapEditor not defined)');
+                        }
+                    }, 100); // Wait 100ms for script to register global
+                };
+                script.onerror = () => {
+                    console.error('Failed to load mapeditor.js');
+                    alert('Failed to load mapeditor.js');
+                };
+                document.body.appendChild(script);
+            }
         }
-        // Credit (delete usermap.txt)
+        // Credit
         let creditRect = { x: 1010, y: 670, w: 260, h: 36 };
         if (pointInRect(mouse.x, mouse.y, creditRect)) {
             flashCredit();
@@ -544,10 +579,16 @@ canvas.addEventListener('mousedown', e => {
 });
 
 function flashCredit() {
+    // Clear usermap and reload to default
+    localStorage.removeItem('usermap_txt');
     let flashes = 8;
     let i = 0;
     function flash() {
-        if (i >= flashes) return;
+        if (i >= flashes) {
+            // After flashing, reload page to reset map
+            window.location.reload();
+            return;
+        }
         ctx.globalAlpha = 0.7;
         ctx.fillStyle = i % 2 === 0 ? 'red' : 'rgb(180,60,60)';
         ctx.fillRect(1010, 670, 260, 36);
@@ -576,17 +617,24 @@ render();
 let player, inventory;
 let mapLoaded = false;
 
-// Load map from a string (replace with AJAX/file load as needed)
+// Load map from localStorage (usermap_txt) if available, otherwise fallback to map.txt
 function loadGame() {
     player = new Player(300);
     inventory = new Inventory(0, 0, 1, 0, 0);
-    fetch('map.txt')
-        .then(res => res.text())
-        .then(text => {
-            loadMap(text);
-            mapLoaded = true;
-            requestAnimationFrame(gameLoop);
-        });
+    const userMapString = localStorage.getItem('usermap_txt');
+    if (userMapString) {
+        loadMap(userMapString);
+        mapLoaded = true;
+        requestAnimationFrame(gameLoop);
+    } else {
+        fetch('map.txt')
+            .then(res => res.text())
+            .then(text => {
+                loadMap(text);
+                mapLoaded = true;
+                requestAnimationFrame(gameLoop);
+            });
+    }
 }
 
 function gameLoop() {
